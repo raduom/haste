@@ -1,162 +1,131 @@
-{-# LANGUAGE ExistentialQuantification #-}
-{-# LANGUAGE FlexibleContexts          #-}
-{-# LANGUAGE FlexibleInstances         #-}
-{-# LANGUAGE MultiParamTypeClasses     #-}
-{-|
-Module : Match
-
-Implementation of pattern matching according to Luc Maranget's paper Compiling Pattern Matching to good Decision Trees.
--}
+{-# LANGUAGE ConstraintKinds       #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE InstanceSigs          #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes            #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE TypeOperators         #-}
 module K.Match where
 
-import           Data.List     ((\\), replicate)
-import           Data.Maybe    (fromJust, catMaybes)
+import           Data.Bifunctor  as B (first)
+import           Data.Constraint (Dict (..), withDict)
+import           Data.HVect
+import qualified Data.List       as L (head, nubBy)
+import           Data.Proxy
+import           Prelude         hiding (head, tail)
 
-type Identifier = String
+-- Pattern
 
--- | Returns true if I need to build a default matrix if the provided identifier/arity(s)
---   have been used in the other rows on this column.
-newtype Signature = Signature [(Identifier, Int)]
-                    deriving (Eq, Show)
+class TermUnfold (a :: *) where
+  type TUnfold a :: [*]
+  tUnfold :: [a] -> a -> HVect (TUnfold a)
+  witness :: (AllHave Pattern tl)
+          => p a
+          -> Proxy tl
+          -> Dict (AllHave Pattern (Append (TUnfold a) tl))
 
--- | A untyped representation of patterns. This is hardly enough, though it
---   should suffice to represent all programs in the paper.
-data Pattern = WildCard
-             | Constructor Signature Identifier [Pattern]
-             deriving (Eq, Show)
+class (TermUnfold a) => Pattern a where
+  tSpecialiseEliminate :: a -> a -> Bool
+  tDefaultEliminate :: [a]     -- ^ The ctors used in the column
+                    -> a       -- ^ The current ctor
+                    -> Bool
+  tIsWildcard :: a -> Bool
 
--- | This data type represents an input to the pattern matching algorithm
---   TODO: Why does this not matter for evaluation?
-data Occurence = Occurence Signature Identifier [Occurence]
+tSameConstructor :: (Pattern a) => a -> a -> Bool
+tSameConstructor = tSpecialiseEliminate
 
-type ClauseMatrix a = [([Pattern], a)]
+type ClauseMatrix p = [(p, Int)]
 
-firstRow :: ClauseMatrix a -> ([Pattern], a)
-firstRow = head
-
-firstColumn :: ClauseMatrix a -> [Pattern]
-firstColumn = map (head . fst)
-
-firstPattern :: ClauseMatrix a -> Pattern
-firstPattern = head . firstColumn
-
-mReduce :: (Identifier -> Bool) -> ([Pattern], a) -> Bool
-mReduce f (Constructor _ identifier _ : _, _) = f identifier
-mReduce _ (WildCard : _, _)                   = True
-mReduce _ ([], _)                             = True
-
-mSpecialization :: ClauseMatrix a -> Identifier -> Int -> ClauseMatrix a
-mSpecialization cm p ar = map unfold $ filter (mReduce (== p)) cm
+mSpecialisation :: forall hd tl. (Pattern hd, AllHave Pattern tl)
+                => ClauseMatrix (HVect (hd ': tl))
+                -> hd
+                -> ClauseMatrix (HVect (Append (TUnfold hd) tl))
+mSpecialisation cm shd = map (B.first u) $ filter matchH cm
   where
-    unfold :: ([Pattern], a) -> ([Pattern], a)
-    unfold (Constructor _ _ ps : rest, a) = (ps ++ rest, a)
-    -- | TODO: This is not correct, actually it is VERY WRONG -- should work but sig might be lost
-    unfold (WildCard : rest, a)           = ((replicate ar WildCard) ++ rest, a)
-    -- TODO: Should never happen
-    unfold ps@([], _)                     = ps
+    u :: (Pattern hd, AllHave Pattern tl) => HVect (hd ': tl) -> (HVect (Append (TUnfold hd) tl))
+    u (hd :&: tl) = hAppend (tUnfold fc hd) tl
+    fc = cmFirstColumn cm
+    matchH :: (HVect (hd ': tl), Int) -> Bool
+    matchH ((hd :&: _), _) = tSpecialiseEliminate hd shd
 
-removeFirstColumn :: ([Pattern], a) -> ([Pattern], a)
-removeFirstColumn (_ : rest, a) = (rest, a)
--- TODO: Should never happen
-removeFirstColumn ([], a)       = ([], a)
+mDefault :: forall hd tl. (Pattern hd, AllHave Pattern tl)
+         => ClauseMatrix (HVect (hd ': tl))
+         -> Maybe (ClauseMatrix (HVect tl))
+mDefault cm =
+  maybeDefault $
+  map (B.first tail) $
+  filter matchD cm
+  where
+    maybeDefault :: [a] -> Maybe [a]
+    maybeDefault [] = Nothing
+    maybeDefault a  = Just a
+    matchD :: (HVect (hd ': tl), Int) -> Bool
+    matchD ((hd :&: _), _) = tDefaultEliminate fc hd
+    fc = L.nubBy (tSameConstructor) $ cmFirstColumn cm
 
-mDefault0 :: ClauseMatrix a -> ClauseMatrix a
+cmFirstColumn :: forall hd tl. ClauseMatrix (HVect (hd ': tl)) -> [hd]
+cmFirstColumn = map (head . fst)
 
-mDefault0 cm = map removeFirstColumn cm
+cmFirstPattern :: forall p. ClauseMatrix p -> p
+cmFirstPattern = fst . L.head -- TODO: L.Head is unsafe
 
-mDefault :: [Identifier] -> ClauseMatrix a -> ClauseMatrix a
-mDefault ids = map removeFirstColumn . filter (mReduce (\i -> elem i ids))
+cmIsWildcardRow :: forall ps. (AllHave Pattern ps) => HVect ps -> Bool
+cmIsWildcardRow HNil        = True
+cmIsWildcardRow (hd :&: tl) = tIsWildcard hd && cmIsWildcardRow tl
 
+-- Decision trees
 
-
--- | This is just a reminder that we should make better use of the type
---   system at some point to enforce some typing rules.
-typeCheckPattern :: [([Pattern], a)] -> Bool
-typeCheckPattern = undefined
-
-{- |
-This is the A language defined in the paper. The type parameter a represents
-the semantic domain we map to.
--}
 class DecisionTree a where
   dtLeaf :: Int -> a
   dtFail :: a
   dtSwitch :: SwitchClauseList a -> a
   dtSwap :: Int -> a -> a
 
--- | This represents the L association list from the paper
-data SwitchClauseList a = SwitchClauseList
-  { -- | The S matrices built for each constructor in the pattern match
-    sclCons    :: ![(Identifier, a)]
-    -- | The optional default matrix (if there are constructors that have not been used)
-  , sclDefault :: !(Maybe a)
-  }
-
-headCtors :: ClauseMatrix a -> [(Signature, Identifier, [Pattern])]
-headCtors = (=<<) getCtor . firstColumn
-  where
-    getCtor :: Pattern -> [(Signature, Identifier, [Pattern])]
-    getCtor WildCard                       = []
-    getCtor (Constructor sig identifier ps) = [(sig, identifier, ps)]
-
-headIds :: ClauseMatrix a -> [(Identifier, Int)]
-headIds = map (\(_, it, ps) -> (it, length ps)) . headCtors
-
-signature :: Pattern -> Maybe Signature
-signature WildCard = Nothing
-signature (Constructor sig _ _) = Just sig
-
--- | TODO: Write this using types
-headSigs :: ClauseMatrix a -> [Signature]
-headSigs = catMaybes . map signature . firstColumn
-
-isWildcard :: Pattern -> Bool
-isWildcard WildCard = True
-isWildcard _ = False
-
-compilePatternMatch :: (DecisionTree a) => ClauseMatrix Int -> a
--- | The first compilation rule.
-compilePatternMatch [] = dtFail
--- | The second compilation rule
-compilePatternMatch ( (ps, a) : _ )
-  | ps == [] = dtLeaf a
-  | all isWildcard ps = dtLeaf a
--- | The third compilation rule
-compilePatternMatch cm = dtSwitch $
-  SwitchClauseList { sclCons = compileSpecialized cm
-                   , sclDefault = compileDefault cm
+data SwitchClauseList a =
+  SwitchClauseList { sclSpecialised :: ![a] -- Can I embed the identifier in a?
+                   , sclDefault     :: !(Maybe a)
                    }
 
-compileDefault :: (DecisionTree a) => ClauseMatrix Int -> Maybe a
-compileDefault cm =
-  let sigs = headSigs cm
-      hids = map fst $ headIds cm
-  in case (sigs, length hids) of
-    ([], 0) -> return $ compilePatternMatch $ mDefault0 cm
-    (_, 0) -> Nothing
-    (Signature cs : _, _) -> return $ compilePatternMatch $ mDefault (map fst cs \\ hids) cm
-    ([], _) -> Nothing -- TODO: Will never happen
+compilePatternMatch :: (DecisionTree a, AllHave Pattern ps)
+                    => ClauseMatrix (HVect ps)
+                    -> a
+compilePatternMatch [] = dtFail
+compilePatternMatch ((HNil, a) : _) = dtLeaf a
+compilePatternMatch cm@(((_ :&: _), a) : _)
+  | cmIsWildcardRow (cmFirstPattern cm) = dtLeaf a
+  | otherwise = dtSwitch $
+                SwitchClauseList { sclSpecialised = compileSpecialised cm
+                                 , sclDefault = compileDefault cm
+                                 }
 
-compileSpecialized :: (DecisionTree a) => ClauseMatrix Int -> [(Identifier, a)]
-compileSpecialized cm = map splitByCtor $ headIds cm
+compileSpecialised :: forall a hd tl. (DecisionTree a, Pattern hd, AllHave Pattern tl)
+                   => ClauseMatrix (HVect (hd ': tl))
+                   -> [a]
+compileSpecialised cm =
+  map (compile . mSpecialisation cm) $
+  L.nubBy tSameConstructor $
+  cmFirstColumn cm
   where
-    splitByCtor :: (DecisionTree a) => (Identifier, Int) -> (Identifier, a)
-    splitByCtor (cid, ar) =
-      (cid, compilePatternMatch $ mSpecialization cm cid ar)
+    compile :: ClauseMatrix (HVect (Append (TUnfold hd) tl)) -> a
+    compile = withDict w compilePatternMatch
+    w :: Dict (AllHave Pattern (Append (TUnfold hd) tl))
+    w = witness (Proxy :: Proxy hd) (Proxy :: Proxy tl)
 
-instance DecisionTree ([Occurence] -> Int) where
-  dtLeaf v = \_ -> v
-  dtFail = \_ -> -1     -- encode failure as a return of -1 for now
-  dtSwitch (SwitchClauseList cs df) =
-    \c@(Occurence _ cid _ : _) ->
-      case lookup cid cs of
-        Just fa -> fa (oSpecialize c)
-        Nothing -> (fromJust df) (oDefault c)
-    where
-      -- | TODO: Duplication. O vs M specialization
-      oSpecialize :: [Occurence] -> [Occurence]
-      oSpecialize (Occurence _ _ ps : rest) = ps ++ rest
-      oSpecialize []                        = []
-      oDefault :: [Occurence] -> [Occurence]
-      oDefault = tail
-  dtSwap = undefined
+compileDefault :: forall a hd tl. (DecisionTree a, Pattern hd, AllHave Pattern tl)
+               => ClauseMatrix (HVect (hd ': tl))
+               -> Maybe a
+compileDefault cm = compilePatternMatch <$> mDefault cm
+
+-- HVect++
+
+hAppend :: HVect as -> HVect bs -> HVect (Append as bs)
+hAppend HNil bs         = bs
+hAppend (ah :&: atl) bs = ah :&: hAppend atl bs
+
+instance (Pattern a, Pattern b) => TermUnfold (a, b) where
+  type TUnfold (a, b) = '[a, b]
+  tUnfold _ (a, b) = a :&: b :&: HNil
+  witness :: (AllHave Pattern tl) => p (x, y) -> Proxy tl -> Dict (AllHave Pattern (Append '[a, b] tl))
+  witness _ _ = Dict
