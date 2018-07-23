@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor     #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections     #-}
 
 module Pattern ( LHS
                , PatternMatrix
@@ -8,8 +9,10 @@ module Pattern ( LHS
                , Pattern(..)
                , mkClauseMatrix
                , DecisionTree(..)
+               , compilePattern
                ) where
 
+import           Data.Bifunctor        (second)
 import           Data.Functor.Foldable (Fix (..), unfix)
 import           Data.Maybe            (mapMaybe)
 import           Data.Semigroup        ((<>))
@@ -34,7 +37,7 @@ newtype LHS a = LHS [Column a] deriving Functor
 type PatternMatrix = LHS (Fix Pattern)
 
 type Action       = Int
-data ClauseMatrix = ClauseMatrix (LHS (Fix Pattern)) [Action]
+data ClauseMatrix = ClauseMatrix PatternMatrix [Action]
 
 -- [ Builders ]
 
@@ -65,8 +68,8 @@ sigma = mapMaybe ix . getTerms
 sigma₁ :: PatternMatrix -> [Index]
 sigma₁ (LHS (c : _)) = sigma c
 
-mSpecialize :: Index -> ClauseMatrix -> ClauseMatrix
-mSpecialize ix = expandMatrix ix . filterByIndex ix
+mSpecialize :: Index -> ClauseMatrix -> (Index, ClauseMatrix)
+mSpecialize ix = (ix, ) . expandMatrix ix . filterByIndex ix
 
 mDefault :: ClauseMatrix -> Maybe ClauseMatrix
 mDefault (ClauseMatrix (LHS (c : cs)) as) =
@@ -89,7 +92,7 @@ filterByIndex ix (ClauseMatrix (LHS (c : cs)) as) =
   in ClauseMatrix (LHS newCs) newAs
   where
     checkPatternIndex :: Pattern a -> Bool
-    checkPatternIndex Wildcard = True
+    checkPatternIndex Wildcard        = True
     checkPatternIndex (Pattern ix' _) = ix == ix'
 
 expandMatrix :: Index -> ClauseMatrix -> ClauseMatrix
@@ -124,3 +127,13 @@ data DecisionTree a = Leaf Action
                     | Fail
                     | Switch L
                     | Swap Index (Fix DecisionTree)
+
+compilePattern :: ClauseMatrix -> Fix DecisionTree
+compilePattern cm@(ClauseMatrix pm ac) =
+  let s₁ = sigma₁ pm
+      ls = map (`mSpecialize` cm) s₁
+      d  = mDefault cm
+  in  Fix $ Switch L
+      { getSpecializations = map (second compilePattern) ls
+      , getDefault = compilePattern <$> d
+      }

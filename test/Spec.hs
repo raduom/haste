@@ -27,9 +27,9 @@ instance IsPattern Lst where
 instance HasMetadata Lst where
   getMetadata :: Proxy Lst -> Metadata
   getMetadata _ = Metadata
-                  [ Metadata []
-                  , Metadata []
-                  , Metadata [getMetadata (Proxy :: Proxy Lst)]
+                  [ Metadata [] -- CnsW (0)
+                  , Metadata [] -- Nil  (1)
+                  , Metadata [getMetadata (Proxy :: Proxy Lst)] -- Cns Lst (2)
                   ]
 
 tests :: TestTree
