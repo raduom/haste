@@ -21,12 +21,16 @@ description:         Please see the README on GitHub at <https://github.com/gith
 
 dependencies:
 - base >= 4.7 && < 5
+- generics-sop
+- recursion-schemes
+- text
+- text-show
 
 library:
   source-dirs: src
 
 executables:
-  haste-exe:
+  haste:
     main:                Main.hs
     source-dirs:         app
     ghc-options:
@@ -46,3 +50,5 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - haste
+    - tasty
+    - tasty-hunit
