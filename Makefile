@@ -28,7 +28,7 @@ bench:
 	$(stack) bench $(package)
 
 ghcid:
-	$(stack) exec -- ghcid -c "stack ghci $(package):lib $(package):test:haste-test --test --ghci-options='-fobject-code -fno-warn-unused-do-bind' --main-is $(package):$(package)"
+	$(stack) exec -- ghcid -c "stack ghci $(package):lib $(package):test:haste-test --test --ghci-options='-fobject-code -fno-warn-unused-do-bind' --main-is $(package):haste-test"
 
 dev-deps:
 	stack install ghcid
