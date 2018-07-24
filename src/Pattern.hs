@@ -3,13 +3,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections     #-}
 
-module Pattern ( PatternMatrix
-               , ClauseMatrix
+module Pattern ( PatternMatrix(..)
+               , ClauseMatrix(..)
                , Column(..)
                , Metadata(..)
                , Pattern(..)
                , Index
                , mkClauseMatrix
+               , failure
+               , leaf
+               , switch
+               , swap
                , DecisionTree(..)
                , compilePattern
                ) where
@@ -23,15 +27,19 @@ import           Data.Text             (Text (..), pack)
 import           TextShow              (showt)
 
 data Column = Column
-              { getMetadata :: Metadata
-              , getTerms    :: [Fix Pattern]
-              } deriving (Show, Eq)
+              { getMetadata :: !Metadata
+              , getTerms    :: ![Fix Pattern]
+              } deriving (Eq)
+
+instance Show Column where
+  showsPrec d (Column _ ts) =
+    showString "Column " . showList ts
 
 newtype Metadata = Metadata [Metadata]
                  deriving (Show, Eq)
 
 type Index       = Int
-data Pattern a   = Pattern Index [a]
+data Pattern a   = Pattern Index ![a]
                  | Wildcard
                  deriving (Show, Eq, Functor)
 
@@ -39,7 +47,7 @@ newtype PatternMatrix = PatternMatrix [Column]
                         deriving (Show, Eq)
 
 type Action       = Int
-data ClauseMatrix = ClauseMatrix PatternMatrix [Action]
+data ClauseMatrix = ClauseMatrix PatternMatrix ![Action]
                     deriving (Show, Eq)
 
 instance Show1 Pattern where
@@ -71,6 +79,24 @@ mkClauseMatrix cs as = do
                 else Left $ "Wrong column length. Expected " <> showt as <>
                             " and got " <> showt (length (getTerms c)))
 
+failure :: Fix DecisionTree
+failure = Fix Fail
+
+leaf :: Action -> Fix DecisionTree
+leaf a = Fix (Leaf a)
+
+switch :: [(Index, Fix DecisionTree)]
+       -> Maybe (Fix DecisionTree)
+       -> Fix DecisionTree
+switch brs def =
+  Fix $ Switch L { getSpecializations = brs
+                 , getDefault = def }
+
+swap :: Index
+     -> Fix DecisionTree
+     -> Fix DecisionTree
+swap ix tm = Fix (Swap ix tm)
+
 -- [ Matrix ]
 
 sigma :: Column -> [Index]
@@ -82,7 +108,7 @@ sigma = mapMaybe ix . getTerms
 
 sigma₁ :: PatternMatrix -> [Index]
 sigma₁ (PatternMatrix (c : _)) = sigma c
-sigma₁ _             = []
+sigma₁ _                       = []
 
 mSpecialize :: Index -> ClauseMatrix -> (Index, ClauseMatrix)
 mSpecialize ix = (ix, ) . expandMatrix ix . filterByIndex ix
@@ -91,10 +117,14 @@ mDefault :: ClauseMatrix -> Maybe ClauseMatrix
 mDefault (ClauseMatrix (PatternMatrix (c : cs)) as) =
   let (Metadata mtd) = getMetadata c
       s₁ = sigma c
-  in  if length s₁ /= length mtd
+  in  if null s₁ || length s₁ /= length mtd
       then Just (ClauseMatrix (PatternMatrix cs) as)
       else Nothing
 mDefault _ = Nothing
+
+firstRow :: PatternMatrix -> [Fix Pattern]
+firstRow (PatternMatrix cs) =
+  map (\(Column _ (p : _)) -> p) cs
 
 filterByList :: [Bool] -> [a] -> [a]
 filterByList (True  : bs) (x : xs) = x : filterByList bs xs
@@ -102,20 +132,23 @@ filterByList (False : bs) (_ : xs) = filterByList bs xs
 filterByList _ _                   = []
 
 filterByIndex :: Index -> ClauseMatrix -> ClauseMatrix
-filterByIndex ix (ClauseMatrix (PatternMatrix (c : cs)) as) =
+filterByIndex ix (ClauseMatrix (PatternMatrix cs@(c : _)) as) =
   let filteredRows = map checkPatternIndex (getTerms c)
-      newCs = filterByList filteredRows cs
+      newCs = map (filterRows filteredRows) cs
       newAs = filterByList filteredRows as
   in ClauseMatrix (PatternMatrix newCs) newAs
   where
     checkPatternIndex :: Fix Pattern -> Bool
     checkPatternIndex (Fix Wildcard)        = True
     checkPatternIndex (Fix (Pattern ix' _)) = ix == ix'
+    filterRows :: [Bool] -> Column -> Column
+    filterRows fr (Column md rs) =
+      Column md (filterByList fr rs)
 
 expandMatrix :: Index -> ClauseMatrix -> ClauseMatrix
 expandMatrix ix (ClauseMatrix (PatternMatrix (c : cs)) as) =
   ClauseMatrix (PatternMatrix (expandColumn ix c <> cs)) as
-expandMatrix _ _ = error "Cannot expand empty matrix."
+expandMatrix ix cm = error "Cannot expand empty matrix."
 
 expandColumn :: Index -> Column -> [Column]
 expandColumn ix (Column m ps) =
@@ -176,20 +209,21 @@ instance Show1 DecisionTree where
   liftShowsPrec _ _ _ (Leaf a) = showString $ "Leaf " ++ show a
   liftShowsPrec _ _ _ Fail     = showString "Fail"
   liftShowsPrec showT showL d (Switch l) =
-    showString "Switch " . liftShowsPrec showT showL (d + 1) l
+    showString "Switch L(" .
+    liftShowsPrec showT showL (d + 1) l . showString ")"
   liftShowsPrec showT _ d (Swap ix tm) =
     showString ("Swap " ++ show ix ++ " ") . showT (d + 1) tm
 
 instance Show1 L where
   liftShowsPrec showT _ d (L sm dm) =
-    let showSpec (index, tm) = showString (show index ++ ";")
-                               . showT (d + 1) tm
+    let showSpec (index, tm) = showString (show index ++ ":")
+                               . showT (d + 1) tm . showString ";"
         smString = foldl (.) id $ map showSpec sm
-        dmString = maybe id (showT (d + 1)) dm
+        dmString = maybe id (\s -> showString "*:" . (showT (d + 1)) s) dm
     in  smString . dmString
 
 compilePattern :: ClauseMatrix -> Fix DecisionTree
-compilePattern cm@(ClauseMatrix pm ac)
+compilePattern cm@(ClauseMatrix pm@(PatternMatrix cs) ac)
   | length ac == 0 = Fix Fail
   | isWildcardRow pm = Fix $ Leaf $ head ac
   | otherwise =
@@ -202,5 +236,4 @@ compilePattern cm@(ClauseMatrix pm ac)
         }
   where
     isWildcardRow :: PatternMatrix -> Bool
-    isWildcardRow (PatternMatrix (Column _ tms : _)) = and (map (Fix Wildcard ==) tms)
-    isWildcardRow _ = False
+    isWildcardRow = and . map (Fix Wildcard ==) . firstRow

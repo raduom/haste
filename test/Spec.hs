@@ -19,17 +19,25 @@ data Lst  = Cns Lst -- index 1
           | Wld     -- wildcard
           deriving (Show, Eq)
 
+cNil :: Index
+cNil = 0
+
+cCons :: Index
+cCons = 1
+
 instance IsPattern Lst where
   toPattern :: Lst -> Fix Pattern
+  toPattern (Cns l) = Fix (Pattern cCons [Fix Wildcard, toPattern l])
+  toPattern Nil     = Fix (Pattern cNil  [])
   toPattern Wld     = Fix Wildcard
-  toPattern Nil     = Fix (Pattern 0 [])
-  toPattern (Cns l) = Fix (Pattern 1 [toPattern l])
 
 instance HasMetadata Lst where
   getMetadata :: Proxy Lst -> Metadata
   getMetadata _ = Metadata
                     [ Metadata [] -- Nil
-                    , Metadata [getMetadata (Proxy :: Proxy Lst)] -- Cns Lst (1)
+                    , Metadata [ Metadata []
+                               , getMetadata (Proxy :: Proxy Lst)
+                               ] -- Cns Lst (1)
                     ]
 
 mkLstPattern :: [[Lst]] -> ClauseMatrix
@@ -47,7 +55,6 @@ defaultPattern =
                , [Wld, Nil]
                , [Wld, Wld] ]
 
-
 appendPattern :: ClauseMatrix
 appendPattern =
   mkLstPattern [ [Nil, Wld]
@@ -60,7 +67,14 @@ tests = testGroup "Tests" [appendTests]
 appendTests :: TestTree
 appendTests = testGroup "Basic pattern compilation"
   [ testCase "Naive compilation of the append pattern" $
-      compilePattern appendPattern @?= Fix Fail
+      compilePattern appendPattern @?=
+        switch [ (cNil, leaf 1)
+               , (cCons, switch [] $
+                     Just (switch [] $
+                           Just (switch [ (cNil, leaf 2)
+                                        , (cCons, leaf 3)
+                                        ] Nothing )))
+               ] Nothing
   ]
 
 main :: IO ()
