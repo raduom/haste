@@ -1,11 +1,9 @@
 {-# LANGUAGE DeriveFunctor     #-}
-{-# LANGUAGE ExplicitForAll    #-}
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections     #-}
 
-module Pattern ( LHS
-               , PatternMatrix
+module Pattern ( PatternMatrix
                , ClauseMatrix
                , Column(..)
                , Metadata(..)
@@ -37,12 +35,12 @@ data Pattern a   = Pattern Index [a]
                  | Wildcard
                  deriving (Show, Eq, Functor)
 
-newtype LHS a = LHS [Column] deriving Functor
-
-type PatternMatrix = LHS (Fix Pattern)
+newtype PatternMatrix = PatternMatrix [Column]
+                        deriving (Show, Eq)
 
 type Action       = Int
 data ClauseMatrix = ClauseMatrix PatternMatrix [Action]
+                    deriving (Show, Eq)
 
 instance Show1 Pattern where
   liftShowsPrec showT _      d Wildcard = showString "_"
@@ -63,7 +61,7 @@ mkClauseMatrix :: [Column]
                -> Either Text ClauseMatrix
 mkClauseMatrix cs as = do
   validateColumnLength (length as) cs
-  pure (ClauseMatrix (LHS cs) as)
+  pure (ClauseMatrix (PatternMatrix cs) as)
   where
     validateColumnLength :: Int -> [Column] -> Either Text ()
     validateColumnLength as =
@@ -83,18 +81,20 @@ sigma = mapMaybe ix . getTerms
     ix (Fix Wildcard)       = Nothing
 
 sigma₁ :: PatternMatrix -> [Index]
-sigma₁ (LHS (c : _)) = sigma c
+sigma₁ (PatternMatrix (c : _)) = sigma c
+sigma₁ _             = []
 
 mSpecialize :: Index -> ClauseMatrix -> (Index, ClauseMatrix)
 mSpecialize ix = (ix, ) . expandMatrix ix . filterByIndex ix
 
 mDefault :: ClauseMatrix -> Maybe ClauseMatrix
-mDefault (ClauseMatrix (LHS (c : cs)) as) =
+mDefault (ClauseMatrix (PatternMatrix (c : cs)) as) =
   let (Metadata mtd) = getMetadata c
       s₁ = sigma c
   in  if length s₁ /= length mtd
-      then Just (ClauseMatrix (LHS cs) as)
+      then Just (ClauseMatrix (PatternMatrix cs) as)
       else Nothing
+mDefault _ = Nothing
 
 filterByList :: [Bool] -> [a] -> [a]
 filterByList (True  : bs) (x : xs) = x : filterByList bs xs
@@ -102,19 +102,20 @@ filterByList (False : bs) (_ : xs) = filterByList bs xs
 filterByList _ _                   = []
 
 filterByIndex :: Index -> ClauseMatrix -> ClauseMatrix
-filterByIndex ix (ClauseMatrix (LHS (c : cs)) as) =
+filterByIndex ix (ClauseMatrix (PatternMatrix (c : cs)) as) =
   let filteredRows = map checkPatternIndex (getTerms c)
       newCs = filterByList filteredRows cs
       newAs = filterByList filteredRows as
-  in ClauseMatrix (LHS newCs) newAs
+  in ClauseMatrix (PatternMatrix newCs) newAs
   where
     checkPatternIndex :: Fix Pattern -> Bool
     checkPatternIndex (Fix Wildcard)        = True
     checkPatternIndex (Fix (Pattern ix' _)) = ix == ix'
 
 expandMatrix :: Index -> ClauseMatrix -> ClauseMatrix
-expandMatrix ix (ClauseMatrix (LHS (c : cs)) as) =
-  ClauseMatrix (LHS (expandColumn ix c <> cs)) as
+expandMatrix ix (ClauseMatrix (PatternMatrix (c : cs)) as) =
+  ClauseMatrix (PatternMatrix (expandColumn ix c <> cs)) as
+expandMatrix _ _ = error "Cannot expand empty matrix."
 
 expandColumn :: Index -> Column -> [Column]
 expandColumn ix (Column m ps) =
@@ -188,11 +189,18 @@ instance Show1 L where
     in  smString . dmString
 
 compilePattern :: ClauseMatrix -> Fix DecisionTree
-compilePattern cm@(ClauseMatrix pm ac) =
-  let s₁ = sigma₁ pm
-      ls = map (`mSpecialize` cm) s₁
-      d  = mDefault cm
-  in  Fix $ Switch L
-      { getSpecializations = map (second compilePattern) ls
-      , getDefault = compilePattern <$> d
-      }
+compilePattern cm@(ClauseMatrix pm ac)
+  | length ac == 0 = Fix Fail
+  | isWildcardRow pm = Fix $ Leaf $ head ac
+  | otherwise =
+    let s₁ = sigma₁ pm
+        ls = map (`mSpecialize` cm) s₁
+        d  = mDefault cm
+    in  Fix $ Switch L
+        { getSpecializations = map (second compilePattern) ls
+        , getDefault = compilePattern <$> d
+        }
+  where
+    isWildcardRow :: PatternMatrix -> Bool
+    isWildcardRow (PatternMatrix (Column _ tms : _)) = and (map (Fix Wildcard ==) tms)
+    isWildcardRow _ = False

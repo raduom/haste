@@ -4,6 +4,7 @@
 module Main where
 
 import           Data.Functor.Foldable (Fix (..))
+import           Data.List             (transpose)
 import           Data.Proxy            (Proxy (..))
 
 import           Data.Either           (fromRight)
@@ -33,12 +34,12 @@ instance HasMetadata Lst where
 
 mkLstPattern :: [[Lst]] -> ClauseMatrix
 mkLstPattern ls =
-  let as = take (length cs) [1..]
+  let as = take (length ls) [1..]
       md = getMetadata (Proxy :: Proxy Lst)
-      cs = fmap (Column md . (toPattern <$>)) ls
+      cs = fmap (Column md . (toPattern <$>)) (transpose ls)
   in case mkClauseMatrix cs as of
        Right matrix -> matrix
-       Left  _      -> error "Invalid clause matrix definition."
+       Left  msg    -> error $ "Invalid definition: " ++ show msg
 
 defaultPattern :: ClauseMatrix
 defaultPattern =
@@ -59,7 +60,7 @@ tests = testGroup "Tests" [appendTests]
 appendTests :: TestTree
 appendTests = testGroup "Basic pattern compilation"
   [ testCase "Naive compilation of the append pattern" $
-      True @?= True
+      compilePattern appendPattern @?= Fix Fail
   ]
 
 main :: IO ()
