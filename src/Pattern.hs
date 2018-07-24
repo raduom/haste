@@ -1,28 +1,33 @@
 {-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE ExplicitForAll    #-}
+{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections     #-}
 
 module Pattern ( LHS
                , PatternMatrix
+               , ClauseMatrix
+               , Column(..)
                , Metadata(..)
-               , Index
                , Pattern(..)
+               , Index
                , mkClauseMatrix
                , DecisionTree(..)
                , compilePattern
                ) where
 
 import           Data.Bifunctor        (second)
+import           Data.Functor.Classes  (Eq1 (..), Show1 (..))
 import           Data.Functor.Foldable (Fix (..), unfix)
 import           Data.Maybe            (mapMaybe)
 import           Data.Semigroup        ((<>))
 import           Data.Text             (Text (..), pack)
 import           TextShow              (showt)
 
-data Column a = Column
-                { getMetadata :: Metadata
-                , getTerms    :: [Pattern a]
-                } deriving (Show, Eq, Functor)
+data Column = Column
+              { getMetadata :: Metadata
+              , getTerms    :: [Fix Pattern]
+              } deriving (Show, Eq)
 
 newtype Metadata = Metadata [Metadata]
                  deriving (Show, Eq)
@@ -32,23 +37,35 @@ data Pattern a   = Pattern Index [a]
                  | Wildcard
                  deriving (Show, Eq, Functor)
 
-newtype LHS a = LHS [Column a] deriving Functor
+newtype LHS a = LHS [Column] deriving Functor
 
 type PatternMatrix = LHS (Fix Pattern)
 
 type Action       = Int
 data ClauseMatrix = ClauseMatrix PatternMatrix [Action]
 
+instance Show1 Pattern where
+  liftShowsPrec showT _      d Wildcard = showString "_"
+  liftShowsPrec showT showTs d (Pattern ix t) =
+    showString "P " . showString (show ix) .
+    showString " "  . showTs t
+
+instance Eq1 Pattern where
+  liftEq _ Wildcard Wildcard = True
+  liftEq eqT (Pattern ix ts) (Pattern ix' ts') =
+    ix == ix' && and (zipWith eqT ts ts')
+  liftEq _ _ _ = False
+
 -- [ Builders ]
 
-mkClauseMatrix :: [Column (Fix Pattern)]
+mkClauseMatrix :: [Column]
                -> [Action]
                -> Either Text ClauseMatrix
 mkClauseMatrix cs as = do
   validateColumnLength (length as) cs
   pure (ClauseMatrix (LHS cs) as)
   where
-    validateColumnLength :: Int -> [Column (Fix Pattern)] -> Either Text ()
+    validateColumnLength :: Int -> [Column] -> Either Text ()
     validateColumnLength as =
       mapM_ (\c ->
                 if length (getTerms c) == as
@@ -58,12 +75,12 @@ mkClauseMatrix cs as = do
 
 -- [ Matrix ]
 
-sigma :: Column a -> [Index]
+sigma :: Column -> [Index]
 sigma = mapMaybe ix . getTerms
   where
-    ix :: Pattern a -> Maybe Index
-    ix (Pattern ix _) = Just ix
-    ix Wildcard       = Nothing
+    ix :: Fix Pattern -> Maybe Index
+    ix (Fix (Pattern ix _)) = Just ix
+    ix (Fix Wildcard)       = Nothing
 
 sigma₁ :: PatternMatrix -> [Index]
 sigma₁ (LHS (c : _)) = sigma c
@@ -91,15 +108,15 @@ filterByIndex ix (ClauseMatrix (LHS (c : cs)) as) =
       newAs = filterByList filteredRows as
   in ClauseMatrix (LHS newCs) newAs
   where
-    checkPatternIndex :: Pattern a -> Bool
-    checkPatternIndex Wildcard        = True
-    checkPatternIndex (Pattern ix' _) = ix == ix'
+    checkPatternIndex :: Fix Pattern -> Bool
+    checkPatternIndex (Fix Wildcard)        = True
+    checkPatternIndex (Fix (Pattern ix' _)) = ix == ix'
 
 expandMatrix :: Index -> ClauseMatrix -> ClauseMatrix
 expandMatrix ix (ClauseMatrix (LHS (c : cs)) as) =
   ClauseMatrix (LHS (expandColumn ix c <> cs)) as
 
-expandColumn :: Index -> Column (Fix Pattern) -> [Column (Fix Pattern)]
+expandColumn :: Index -> Column -> [Column]
 expandColumn ix (Column m ps) =
   let metas    = expandMetadata ix m
       patterns = map (expandPattern metas) ps
@@ -111,22 +128,64 @@ expandMetadata ix (Metadata ms) =
   in  ms'
 
 expandPattern :: [Metadata]
-              -> Pattern (Fix Pattern)
-              -> [Pattern (Fix Pattern)]
-expandPattern _ (Pattern ix fixedPs) = map unfix fixedPs
-expandPattern ms Wildcard            = replicate (length ms) Wildcard
+              -> Fix Pattern
+              -> [Fix Pattern]
+expandPattern _  (Fix (Pattern ix fixedPs)) = fixedPs
+expandPattern ms (Fix Wildcard)             = replicate (length ms) (Fix Wildcard)
 
 --[ Target language ]
 
-data L = L
-         { getSpecializations :: [(Index, Fix DecisionTree)]
-         , getDefault         :: Maybe (Fix DecisionTree)
-         }
+data L a = L
+           { getSpecializations :: [(Index, a)]
+           , getDefault         :: Maybe a
+           } deriving (Show, Eq, Functor)
 
 data DecisionTree a = Leaf Action
                     | Fail
-                    | Switch L
-                    | Swap Index (Fix DecisionTree)
+                    | Switch (L a)
+                    | Swap Index a
+                    deriving (Show, Eq, Functor)
+
+instance Eq1 DecisionTree where
+  liftEq _ Fail Fail = True
+  liftEq _ (Leaf a) (Leaf a') = a == a'
+  liftEq eqT (Switch l) (Switch l') =
+    liftEq eqT l l'
+  liftEq eqT (Swap ix t) (Swap ix' t') =
+    ix == ix' && t `eqT` t'
+  liftEq _ _ _ = False
+
+smEq :: (a -> b -> Bool)
+     -> [(Index, a)]
+     -> [(Index, b)]
+     -> Bool
+smEq eq s₁ s₂ =
+  and (zipWith combine s₁ s₂)
+  where
+    combine (ix, a) (ix', a') = ix == ix' && a `eq` a'
+
+instance Eq1 L where
+  liftEq eqT (L s (Just d)) (L s' (Just d')) =
+    smEq eqT s s' && d `eqT` d'
+  liftEq eqT (L s Nothing) (L s' Nothing) =
+    smEq eqT s s'
+  liftEq _ _ _ = False
+
+instance Show1 DecisionTree where
+  liftShowsPrec _ _ _ (Leaf a) = showString $ "Leaf " ++ show a
+  liftShowsPrec _ _ _ Fail     = showString "Fail"
+  liftShowsPrec showT showL d (Switch l) =
+    showString "Switch " . liftShowsPrec showT showL (d + 1) l
+  liftShowsPrec showT _ d (Swap ix tm) =
+    showString ("Swap " ++ show ix ++ " ") . showT (d + 1) tm
+
+instance Show1 L where
+  liftShowsPrec showT _ d (L sm dm) =
+    let showSpec (index, tm) = showString (show index ++ ";")
+                               . showT (d + 1) tm
+        smString = foldl (.) id $ map showSpec sm
+        dmString = maybe id (showT (d + 1)) dm
+    in  smString . dmString
 
 compilePattern :: ClauseMatrix -> Fix DecisionTree
 compilePattern cm@(ClauseMatrix pm ac) =

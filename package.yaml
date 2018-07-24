@@ -21,24 +21,12 @@ description:         Please see the README on GitHub at <https://github.com/gith
 
 dependencies:
 - base >= 4.7 && < 5
-- generics-sop
 - recursion-schemes
 - text
 - text-show
 
 library:
   source-dirs: src
-
-executables:
-  haste:
-    main:                Main.hs
-    source-dirs:         app
-    ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
-    dependencies:
-    - haste
 
 tests:
   haste-test:

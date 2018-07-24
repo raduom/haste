@@ -1,44 +1,66 @@
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE InstanceSigs      #-}
 
-import Data.Functor.Foldable (Fix(..))
-import Data.Proxy (Proxy(..))
+module Main where
 
-import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (testCase, (@?=))
+import           Data.Functor.Foldable (Fix (..))
+import           Data.Proxy            (Proxy (..))
 
+import           Data.Either           (fromRight)
+import           Test.Tasty            (TestTree, defaultMain, testGroup)
+import           Test.Tasty.HUnit      (testCase, (@?=))
 
-import Pattern
-import Pattern.Class
+import           Pattern               hiding (getMetadata)
+import           Pattern.Class
 
-data Lst  = Cns Lst -- index 2
-          | Nil     -- index 1
-          | CnsW    -- index 0
+data Lst  = Cns Lst -- index 1
+          | Nil     -- index 0
           | Wld     -- wildcard
           deriving (Show, Eq)
 
 instance IsPattern Lst where
   toPattern :: Lst -> Fix Pattern
   toPattern Wld     = Fix Wildcard
-  toPattern CnsW    = Fix (Pattern 0 [Fix Wildcard])
-  toPattern Nil     = Fix (Pattern 1 [])
-  toPattern (Cns l) = Fix (Pattern 2 [toPattern l])
+  toPattern Nil     = Fix (Pattern 0 [])
+  toPattern (Cns l) = Fix (Pattern 1 [toPattern l])
 
 instance HasMetadata Lst where
   getMetadata :: Proxy Lst -> Metadata
   getMetadata _ = Metadata
-                  [ Metadata [] -- CnsW (0)
-                  , Metadata [] -- Nil  (1)
-                  , Metadata [getMetadata (Proxy :: Proxy Lst)] -- Cns Lst (2)
-                  ]
+                    [ Metadata [] -- Nil
+                    , Metadata [getMetadata (Proxy :: Proxy Lst)] -- Cns Lst (1)
+                    ]
+
+mkLstPattern :: [[Lst]] -> ClauseMatrix
+mkLstPattern ls =
+  let as = take (length cs) [1..]
+      md = getMetadata (Proxy :: Proxy Lst)
+      cs = fmap (Column md . (toPattern <$>)) ls
+  in case mkClauseMatrix cs as of
+       Right matrix -> matrix
+       Left  _      -> error "Invalid clause matrix definition."
+
+defaultPattern :: ClauseMatrix
+defaultPattern =
+  mkLstPattern [ [Nil, Wld]
+               , [Wld, Nil]
+               , [Wld, Wld] ]
+
+
+appendPattern :: ClauseMatrix
+appendPattern =
+  mkLstPattern [ [Nil, Wld]
+               , [Wld, Nil]
+               , [Cns Wld, Cns Wld] ]
 
 tests :: TestTree
 tests = testGroup "Tests" [appendTests]
 
 appendTests :: TestTree
-appendTests = testGroup "Append tests"
-  [ testCase "append with one leg up" $
-      True @?= True ]
+appendTests = testGroup "Basic pattern compilation"
+  [ testCase "Naive compilation of the append pattern" $
+      True @?= True
+  ]
 
 main :: IO ()
 main = defaultMain tests
