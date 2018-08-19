@@ -2,6 +2,8 @@
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections     #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Pattern ( PatternMatrix(..)
                , ClauseMatrix(..)
@@ -17,15 +19,18 @@ module Pattern ( PatternMatrix(..)
                , simplify
                , DecisionTree(..)
                , compilePattern
+               , serializeToYaml
                ) where
 
 import           Data.Bifunctor        (second)
 import           Data.Functor.Classes  (Eq1 (..), Show1 (..))
-import           Data.Functor.Foldable (Fix (..))
+import           Data.Functor.Foldable (Fix (..), unfix, cata)
 import           Data.Maybe            (mapMaybe)
 import           Data.Semigroup        ((<>))
 import           Data.Text             (Text)
 import           TextShow              (showt)
+import qualified Data.Yaml.Builder as Y
+import qualified Data.ByteString as B
 
 data Column = Column
               { getMetadata :: !Metadata
@@ -49,6 +54,7 @@ newtype PatternMatrix = PatternMatrix [Column]
                         deriving (Show, Eq)
 
 type Action       = Int
+
 data ClauseMatrix = ClauseMatrix PatternMatrix ![Action]
                     deriving (Show, Eq)
 
@@ -190,6 +196,27 @@ data DecisionTree a = Leaf (Action, [(Int, Int)])
                     | Swap Index a
                     deriving (Show, Eq, Functor)
 
+instance Y.ToYaml a => Y.ToYaml (DecisionTree a) where
+    toYaml (Leaf x) = Y.mapping [ "action" Y..= x ]
+    toYaml Fail = Y.string "fail"
+    toYaml (Switch x) = Y.mapping
+      ["specializations" Y..= Y.array (map (\(i, x) -> Y.array [Y.toYaml i, Y.toYaml x]) (getSpecializations x))
+      , "default" Y..= Y.toYaml (case (getDefault x) of
+                                    Just i -> Y.toYaml i
+                                    Nothing -> Y.null
+                                )
+      ]
+    toYaml (Swap i x) = Y.mapping
+      ["swap" Y..= Y.array [Y.toYaml i, Y.toYaml x]]
+
+serializeToYaml :: Dt -> B.ByteString
+serializeToYaml = Y.toByteString . Y.toYaml
+
+type Dt = Fix DecisionTree
+
+instance Y.ToYaml Dt where
+    toYaml = cata Y.toYaml
+
 instance Eq1 DecisionTree where
   liftEq _ Fail Fail = True
   liftEq _ (Leaf a) (Leaf a') = a == a'
@@ -232,7 +259,7 @@ instance Show1 L where
         dmString = maybe id (\s -> showString "*:" . (showT (d + 1)) s) dm
     in  smString . dmString
 
-compilePattern :: ClauseMatrix -> Fix DecisionTree
+compilePattern :: ClauseMatrix -> DT
 compilePattern cm@(ClauseMatrix pm@(PatternMatrix _) ac)
   | length ac == 0 = Fix Fail
   | isWildcardRow pm = Fix $ Leaf $ (head ac, [])
