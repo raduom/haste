@@ -184,7 +184,7 @@ data L a = L
            , getDefault         :: Maybe a
            } deriving (Show, Eq, Functor)
 
-data DecisionTree a = Leaf (Action, (Int, Int))
+data DecisionTree a = Leaf (Action, [(Int, Int)])
                     | Fail
                     | Switch (L a)
                     | Swap Index a
