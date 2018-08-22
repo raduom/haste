@@ -14,16 +14,17 @@ module Pattern ( PatternMatrix(..)
                , leaf
                , switch
                , swap
+               , simplify
                , DecisionTree(..)
                , compilePattern
                ) where
 
 import           Data.Bifunctor        (second)
 import           Data.Functor.Classes  (Eq1 (..), Show1 (..))
-import           Data.Functor.Foldable (Fix (..), unfix)
+import           Data.Functor.Foldable (Fix (..))
 import           Data.Maybe            (mapMaybe)
 import           Data.Semigroup        ((<>))
-import           Data.Text             (Text (..), pack)
+import           Data.Text             (Text)
 import           TextShow              (showt)
 
 data Column = Column
@@ -32,7 +33,7 @@ data Column = Column
               } deriving (Eq)
 
 instance Show Column where
-  showsPrec d (Column _ ts) =
+  showsPrec _ (Column _ ts) =
     showString "Column " . showList ts
 
 newtype Metadata = Metadata [Metadata]
@@ -41,6 +42,7 @@ newtype Metadata = Metadata [Metadata]
 type Index       = Int
 data Pattern a   = Pattern Index ![a]
                  | Wildcard
+                 | Var String
                  deriving (Show, Eq, Functor)
 
 newtype PatternMatrix = PatternMatrix [Column]
@@ -51,10 +53,11 @@ data ClauseMatrix = ClauseMatrix PatternMatrix ![Action]
                     deriving (Show, Eq)
 
 instance Show1 Pattern where
-  liftShowsPrec showT _      d Wildcard = showString "_"
-  liftShowsPrec showT showTs d (Pattern ix t) =
+  liftShowsPrec _     _      _ Wildcard = showString "_"
+  liftShowsPrec _     showTs _ (Pattern ix t) =
     showString "P " . showString (show ix) .
     showString " "  . showTs t
+  liftShowsPrec _     _      _ (Var lbl) = showString ("$" ++ lbl)
 
 instance Eq1 Pattern where
   liftEq _ Wildcard Wildcard = True
@@ -72,18 +75,18 @@ mkClauseMatrix cs as = do
   pure (ClauseMatrix (PatternMatrix cs) as)
   where
     validateColumnLength :: Int -> [Column] -> Either Text ()
-    validateColumnLength as =
+    validateColumnLength as' =
       mapM_ (\c ->
-                if length (getTerms c) == as
+                if length (getTerms c) == as'
                 then Right ()
-                else Left $ "Wrong column length. Expected " <> showt as <>
+                else Left $ "Wrong column length. Expected " <> showt as' <>
                             " and got " <> showt (length (getTerms c)))
 
 failure :: Fix DecisionTree
 failure = Fix Fail
 
 leaf :: Action -> Fix DecisionTree
-leaf a = Fix (Leaf a)
+leaf a = Fix (Leaf (a, []))
 
 switch :: [(Index, Fix DecisionTree)]
        -> Maybe (Fix DecisionTree)
@@ -91,6 +94,9 @@ switch :: [(Index, Fix DecisionTree)]
 switch brs def =
   Fix $ Switch L { getSpecializations = brs
                  , getDefault = def }
+
+simplify :: Fix DecisionTree -> Fix DecisionTree
+simplify dt = switch [] (Just dt)
 
 swap :: Index
      -> Fix DecisionTree
@@ -103,8 +109,9 @@ sigma :: Column -> [Index]
 sigma = mapMaybe ix . getTerms
   where
     ix :: Fix Pattern -> Maybe Index
-    ix (Fix (Pattern ix _)) = Just ix
-    ix (Fix Wildcard)       = Nothing
+    ix (Fix (Pattern ix' _)) = Just ix'
+    ix (Fix Wildcard)        = Nothing
+    ix (Fix (Var _))         = Nothing
 
 sigma₁ :: PatternMatrix -> [Index]
 sigma₁ (PatternMatrix (c : _)) = sigma c
@@ -140,15 +147,17 @@ filterByIndex ix (ClauseMatrix (PatternMatrix cs@(c : _)) as) =
   where
     checkPatternIndex :: Fix Pattern -> Bool
     checkPatternIndex (Fix Wildcard)        = True
+    checkPatternIndex (Fix (Var _))         = True
     checkPatternIndex (Fix (Pattern ix' _)) = ix == ix'
     filterRows :: [Bool] -> Column -> Column
     filterRows fr (Column md rs) =
       Column md (filterByList fr rs)
+filterByIndex _ cmx = cmx
 
 expandMatrix :: Index -> ClauseMatrix -> ClauseMatrix
 expandMatrix ix (ClauseMatrix (PatternMatrix (c : cs)) as) =
   ClauseMatrix (PatternMatrix (expandColumn ix c <> cs)) as
-expandMatrix ix cm = error "Cannot expand empty matrix."
+expandMatrix _ _ = error "Cannot expand empty matrix."
 
 expandColumn :: Index -> Column -> [Column]
 expandColumn ix (Column m ps) =
@@ -164,8 +173,9 @@ expandMetadata ix (Metadata ms) =
 expandPattern :: [Metadata]
               -> Fix Pattern
               -> [Fix Pattern]
-expandPattern _  (Fix (Pattern ix fixedPs)) = fixedPs
+expandPattern _  (Fix (Pattern _ fixedPs)) = fixedPs
 expandPattern ms (Fix Wildcard)             = replicate (length ms) (Fix Wildcard)
+expandPattern ms (Fix (Var _ ))             = replicate (length ms) (Fix Wildcard)
 
 --[ Target language ]
 
@@ -174,7 +184,7 @@ data L a = L
            , getDefault         :: Maybe a
            } deriving (Show, Eq, Functor)
 
-data DecisionTree a = Leaf Action
+data DecisionTree a = Leaf (Action, [String])
                     | Fail
                     | Switch (L a)
                     | Swap Index a
@@ -223,9 +233,9 @@ instance Show1 L where
     in  smString . dmString
 
 compilePattern :: ClauseMatrix -> Fix DecisionTree
-compilePattern cm@(ClauseMatrix pm@(PatternMatrix cs) ac)
+compilePattern cm@(ClauseMatrix pm@(PatternMatrix _) ac)
   | length ac == 0 = Fix Fail
-  | isWildcardRow pm = Fix $ Leaf $ head ac
+  | isWildcardRow pm = Fix $ Leaf $ (head ac, [])
   | otherwise =
     let s₁ = sigma₁ pm
         ls = map (`mSpecialize` cm) s₁

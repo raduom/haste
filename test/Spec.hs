@@ -7,7 +7,6 @@ import           Data.Functor.Foldable (Fix (..))
 import           Data.List             (transpose)
 import           Data.Proxy            (Proxy (..))
 
-import           Data.Either           (fromRight)
 import           Test.Tasty            (TestTree, defaultMain, testGroup)
 import           Test.Tasty.HUnit      (testCase, (@?=))
 
@@ -69,11 +68,10 @@ appendTests = testGroup "Basic pattern compilation"
   [ testCase "Naive compilation of the append pattern" $
       compilePattern appendPattern @?=
         switch [ (cNil, leaf 1)
-               , (cCons, switch [] $
-                     Just (switch [] $
-                           Just (switch [ (cNil, leaf 2)
-                                        , (cCons, leaf 3)
-                                        ] Nothing )))
+               , (cCons, simplify (simplify
+                           (switch [ (cNil, leaf 2)
+                                   , (cCons, leaf 3)
+                                   ] Nothing )))
                ] Nothing
   ]
 
