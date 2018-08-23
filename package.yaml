@@ -43,3 +43,5 @@ tests:
     - haste
     - tasty
     - tasty-hunit
+    - yaml
+    - bytestring
