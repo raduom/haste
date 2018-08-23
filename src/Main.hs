@@ -12,7 +12,7 @@ import           Data.Either           (fromRight)
 import           Pattern               hiding (getMetadata)
 import           Pattern.Class
 
-import qualified Data.ByteString as S
+import qualified Data.ByteString.Char8 as S
 
 data Lst  = Cns Lst -- index 1
           | Nil     -- index 0
