@@ -190,11 +190,14 @@ data L c a = L
            , getDefault         :: Maybe a
            } deriving (Show, Eq, Functor)
 
-data DecisionTree a = Leaf (Action, [(Int, Int)])
+type Binding = (Int, Int)
+
+data DecisionTree a = Leaf (Action, [Binding])
                     | Fail
                     | Switch (L Index a)
                     | SwitchLit (L (Int, Int) a)
                     | Swap Index a
+                    | Function (Text, [Binding], Text, a) 
                     deriving (Show, Eq, Functor)
 
 instance Y.ToYaml a => Y.ToYaml (DecisionTree a) where
@@ -219,6 +222,12 @@ instance Y.ToYaml a => Y.ToYaml (DecisionTree a) where
 
     toYaml (Swap i x) = Y.mapping
       ["swap" Y..= Y.array [Y.toYaml i, Y.toYaml x]]
+    toYaml (Function (name, bindings, sort, x)) = Y.mapping
+      ["function" Y..= Y.toYaml name
+      , "sort" Y..= Y.toYaml sort
+      , "args" Y..= Y.array (map (\(i1,i2) -> Y.array [Y.toYaml i1, Y.toYaml i2]) bindings)
+      , "next" Y..= Y.toYaml x
+      ]
 
 serializeToYaml :: (Fix DecisionTree) -> B.ByteString
 serializeToYaml = Y.toByteString . Y.toYaml
@@ -262,6 +271,8 @@ instance Show1 DecisionTree where
     liftShowsPrec showT showL (d + 1) l . showString ")"
   liftShowsPrec showT _ d (Swap ix tm) =
     showString ("Swap " ++ show ix ++ " ") . showT (d + 1) tm
+  liftShowsPrec showT _ d (Function (name,args,sort,tm)) =
+    showString ("Function " ++ show name ++ "(" ++ show args ++ "):" ++ show sort) . showT (d + 1) tm
 
 instance Show1 (L Index) where
   liftShowsPrec showT _ d (L sm dm) =
