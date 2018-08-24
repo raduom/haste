@@ -24,7 +24,7 @@ module Pattern ( PatternMatrix(..)
 
 import           Data.Bifunctor        (second)
 import           Data.Functor.Classes  (Eq1 (..), Show1 (..))
-import           Data.Functor.Foldable (Fix (..), unfix, cata)
+import           Data.Functor.Foldable (Fix (..), cata)
 import           Data.Maybe            (mapMaybe)
 import           Data.Semigroup        ((<>))
 import           Data.Text             (Text)
