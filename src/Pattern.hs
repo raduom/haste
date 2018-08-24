@@ -185,14 +185,15 @@ expandPattern ms (Fix (Var _ ))             = replicate (length ms) (Fix Wildcar
 
 --[ Target language ]
 
-data L a = L
-           { getSpecializations :: [(Index, a)]
+data L c a = L
+           { getSpecializations :: [(c, a)]
            , getDefault         :: Maybe a
            } deriving (Show, Eq, Functor)
 
 data DecisionTree a = Leaf (Action, [(Int, Int)])
                     | Fail
-                    | Switch (L a)
+                    | Switch (L Index a)
+                    | SwitchLit (L (Int, Int) a)
                     | Swap Index a
                     deriving (Show, Eq, Functor)
 
@@ -208,6 +209,14 @@ instance Y.ToYaml a => Y.ToYaml (DecisionTree a) where
                                     Nothing -> Y.null
                                 )
       ]
+    toYaml (SwitchLit x) = Y.mapping
+      ["specializations" Y..= Y.array (map (\((i1, i2), i3) -> Y.array [(Y.array [Y.toYaml i1, Y.toYaml i2]), Y.toYaml i3]) (getSpecializations x))
+      , "default" Y..= Y.toYaml (case (getDefault x) of
+                                    Just i -> Y.toYaml i
+                                    Nothing -> Y.null
+                                )
+      ]
+
     toYaml (Swap i x) = Y.mapping
       ["swap" Y..= Y.array [Y.toYaml i, Y.toYaml x]]
 
@@ -235,7 +244,7 @@ smEq eq s₁ s₂ =
   where
     combine (ix, a) (ix', a') = ix == ix' && a `eq` a'
 
-instance Eq1 L where
+instance Eq1 (L Index) where
   liftEq eqT (L s (Just d)) (L s' (Just d')) =
     smEq eqT s s' && d `eqT` d'
   liftEq eqT (L s Nothing) (L s' Nothing) =
@@ -248,16 +257,28 @@ instance Show1 DecisionTree where
   liftShowsPrec showT showL d (Switch l) =
     showString "Switch L(" .
     liftShowsPrec showT showL (d + 1) l . showString ")"
+  liftShowsPrec showT showL d (SwitchLit l) =
+    showString "SwitchLit L(" .
+    liftShowsPrec showT showL (d + 1) l . showString ")"
   liftShowsPrec showT _ d (Swap ix tm) =
     showString ("Swap " ++ show ix ++ " ") . showT (d + 1) tm
 
-instance Show1 L where
+instance Show1 (L Index) where
   liftShowsPrec showT _ d (L sm dm) =
     let showSpec (index, tm) = showString (show index ++ ":")
                                . showT (d + 1) tm . showString ";"
         smString = foldl (.) id $ map showSpec sm
         dmString = maybe id (\s -> showString "*:" . (showT (d + 1)) s) dm
     in  smString . dmString
+
+instance Show1 (L (Int,Int)) where
+  liftShowsPrec showT _ d (L sm dm) =
+    let showSpec ((i1, i2), tm) = showString (show i1 ++ ".i" ++ show i2 ++ ":")
+                               . showT (d + 1) tm . showString ";"
+        smString = foldl (.) id $ map showSpec sm
+        dmString = maybe id (\s -> showString "*:" . (showT (d + 1)) s) dm
+    in  smString . dmString
+
 
 compilePattern :: ClauseMatrix -> (Fix DecisionTree)
 compilePattern cm@(ClauseMatrix pm@(PatternMatrix _) ac)
