@@ -211,12 +211,10 @@ instance Y.ToYaml a => Y.ToYaml (DecisionTree a) where
     toYaml (Swap i x) = Y.mapping
       ["swap" Y..= Y.array [Y.toYaml i, Y.toYaml x]]
 
-serializeToYaml :: Dt -> B.ByteString
+serializeToYaml :: (Fix DecisionTree) -> B.ByteString
 serializeToYaml = Y.toByteString . Y.toYaml
 
-type Dt = Fix DecisionTree
-
-instance Y.ToYaml Dt where
+instance Y.ToYaml (Fix DecisionTree) where
     toYaml = cata Y.toYaml
 
 instance Eq1 DecisionTree where
@@ -261,7 +259,7 @@ instance Show1 L where
         dmString = maybe id (\s -> showString "*:" . (showT (d + 1)) s) dm
     in  smString . dmString
 
-compilePattern :: ClauseMatrix -> Dt
+compilePattern :: ClauseMatrix -> (Fix DecisionTree)
 compilePattern cm@(ClauseMatrix pm@(PatternMatrix _) ac)
   | length ac == 0 = Fix Fail
   | isWildcardRow pm = Fix $ Leaf $ (head ac, [])
