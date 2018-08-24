@@ -197,10 +197,12 @@ data DecisionTree a = Leaf (Action, [(Int, Int)])
                     deriving (Show, Eq, Functor)
 
 instance Y.ToYaml a => Y.ToYaml (DecisionTree a) where
-    toYaml (Leaf x) = Y.mapping [ "action" Y..= x ]
+    toYaml (Leaf (act, x)) = Y.mapping [
+        "action" Y..= Y.array [Y.toYaml act, Y.array (map (\(i1,i2) -> Y.array [Y.toYaml i1, Y.toYaml i2]) x)]
+      ]
     toYaml Fail = Y.string "fail"
     toYaml (Switch x) = Y.mapping
-      ["specializations" Y..= Y.array (map (\(i, x) -> Y.array [Y.toYaml i, Y.toYaml x]) (getSpecializations x))
+      ["specializations" Y..= Y.array (map (\(i1, i2) -> Y.array [Y.toYaml i1, Y.toYaml i2]) (getSpecializations x))
       , "default" Y..= Y.toYaml (case (getDefault x) of
                                     Just i -> Y.toYaml i
                                     Nothing -> Y.null
@@ -259,7 +261,7 @@ instance Show1 L where
         dmString = maybe id (\s -> showString "*:" . (showT (d + 1)) s) dm
     in  smString . dmString
 
-compilePattern :: ClauseMatrix -> DT
+compilePattern :: ClauseMatrix -> Dt
 compilePattern cm@(ClauseMatrix pm@(PatternMatrix _) ac)
   | length ac == 0 = Fix Fail
   | isWildcardRow pm = Fix $ Leaf $ (head ac, [])

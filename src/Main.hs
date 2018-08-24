@@ -7,7 +7,6 @@ import           Data.Functor.Foldable (Fix (..))
 import           Data.List             (transpose)
 import           Data.Proxy            (Proxy (..))
 
-import           Data.Either           (fromRight)
 
 import           Pattern               hiding (getMetadata)
 import           Pattern.Class
