@@ -34,7 +34,7 @@ library:
 
 
 executables:
-  haste-exe:
+  haste:
     main:                Main.hs
     source-dirs:         src
     ghc-options:
