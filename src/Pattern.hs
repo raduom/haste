@@ -24,7 +24,7 @@ module Pattern ( PatternMatrix(..)
 
 import           Data.Bifunctor        (second)
 import           Data.Functor.Classes  (Eq1 (..), Show1 (..))
-import           Data.Functor.Foldable (Fix (..), unfix, cata)
+import           Data.Functor.Foldable (Fix (..), cata)
 import           Data.Maybe            (mapMaybe)
 import           Data.Semigroup        ((<>))
 import           Data.Text             (Text)
@@ -186,14 +186,18 @@ expandPattern ms (Fix (Var _ ))             = replicate (length ms) (Fix Wildcar
 --[ Target language ]
 
 data L a = L
-           { getSpecializations :: [(Index, a)]
+           { getSpecializations :: [(Int, a)]
            , getDefault         :: Maybe a
            } deriving (Show, Eq, Functor)
 
-data DecisionTree a = Leaf (Action, [(Int, Int)])
+type Binding = (Int, Int)
+
+data DecisionTree a = Leaf (Action, [Binding])
                     | Fail
                     | Switch (L a)
+                    | SwitchLit Int (L a)
                     | Swap Index a
+                    | Function (Text, [Binding], Text, a) 
                     deriving (Show, Eq, Functor)
 
 instance Y.ToYaml a => Y.ToYaml (DecisionTree a) where
@@ -208,8 +212,23 @@ instance Y.ToYaml a => Y.ToYaml (DecisionTree a) where
                                     Nothing -> Y.null
                                 )
       ]
+    toYaml (SwitchLit i x) = Y.mapping
+      ["specializations" Y..= Y.array (map (\(i1, i2) -> Y.array [Y.toYaml i1, Y.toYaml i2]) (getSpecializations x))
+      , "default" Y..= Y.toYaml (case (getDefault x) of
+                                    Just d -> Y.toYaml d
+                                    Nothing -> Y.null
+                                )
+      , "bitwidth" Y..= Y.toYaml i
+      ]
+
     toYaml (Swap i x) = Y.mapping
       ["swap" Y..= Y.array [Y.toYaml i, Y.toYaml x]]
+    toYaml (Function (name, bindings, sort, x)) = Y.mapping
+      ["function" Y..= Y.toYaml name
+      , "sort" Y..= Y.toYaml sort
+      , "args" Y..= Y.array (map (\(i1,i2) -> Y.array [Y.toYaml i1, Y.toYaml i2]) bindings)
+      , "next" Y..= Y.toYaml x
+      ]
 
 serializeToYaml :: (Fix DecisionTree) -> B.ByteString
 serializeToYaml = Y.toByteString . Y.toYaml
@@ -248,8 +267,13 @@ instance Show1 DecisionTree where
   liftShowsPrec showT showL d (Switch l) =
     showString "Switch L(" .
     liftShowsPrec showT showL (d + 1) l . showString ")"
+  liftShowsPrec showT showL d (SwitchLit i l) =
+    showString ("SwitchLit " ++ show i ++ "L(") .
+    liftShowsPrec showT showL (d + 1) l . showString ")"
   liftShowsPrec showT _ d (Swap ix tm) =
     showString ("Swap " ++ show ix ++ " ") . showT (d + 1) tm
+  liftShowsPrec showT _ d (Function (name,args,sort,tm)) =
+    showString ("Function " ++ show name ++ "(" ++ show args ++ "):" ++ show sort) . showT (d + 1) tm
 
 instance Show1 L where
   liftShowsPrec showT _ d (L sm dm) =
